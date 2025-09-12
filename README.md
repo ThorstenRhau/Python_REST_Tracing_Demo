@@ -28,7 +28,7 @@ pip install fastapi uvicorn httpx \
     opentelemetry-sdk \
     opentelemetry-instrumentation-fastapi \
     opentelemetry-instrumentation-httpx \
-    opentelemetry-instrumentation-uvicorn
+    uvicorn
 ```
 
 Optional (for sending traces to a backend like Jaeger, Tempo, or Honeycomb):
