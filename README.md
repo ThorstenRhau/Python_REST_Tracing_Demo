@@ -5,7 +5,7 @@ distributed traces for inbound HTTP requests, custom spans, and outbound HTTP ca
 
 ---
 
-## 1️⃣ Create and activate a virtual environment
+## Create and activate a virtual environment
 
 From the project root (where `app.py` lives):
 
@@ -13,11 +13,11 @@ From the project root (where `app.py` lives):
 python3 -m venv .venv
 source .venv/bin/activate   # macOS / Linux
 # .venv\Scripts\activate    # Windows PowerShell
-````
+```
 
 ---
 
-## 2️⃣ Install dependencies
+## Install dependencies
 
 With the virtual environment active:
 
@@ -28,62 +28,37 @@ pip install fastapi uvicorn httpx \
     opentelemetry-sdk \
     opentelemetry-instrumentation-fastapi \
     opentelemetry-instrumentation-httpx \
+    opentelemetry-exporter-otlp \
     uvicorn
 ```
 
-Optional (for sending traces to a backend like Jaeger, Tempo, or Honeycomb):
+Install otel-tui application with home-brew on macOS
 
 ```bash
-pip install opentelemetry-exporter-otlp
+brew install ymtdzzz/tap/otel-tui
 ```
 
 ---
 
-## 3️⃣ Run the demo app
+## Run the demo app
 
 Start the FastAPI server:
 
 ```bash
-uvicorn app:app --reload
+./start_demo.sh
+```
+
+Start the OTel TUI in a separate terminal
+
+```bash
+otel-tui
 ```
 
 Visit [http://127.0.0.1:8000/orders/42](http://127.0.0.1:8000/orders/42)
-The terminal will print spans (thanks to the built-in `ConsoleSpanExporter`).
+
+You should now see traces being displayed in the otel-tui application. Press
+ENTER to see the spans for each trace.
 
 ---
 
-## 4️⃣ Explore traces
-
-You’ll see a parent/child span structure similar to:
-
-```
-HTTP GET /orders/42      ← server span (auto)
- ├─ load-order           ← custom span
- └─ HTTP GET httpbin.org ← client span (auto)
-```
-
-If you installed an OTLP exporter and have a collector (Jaeger/Tempo/Honeycomb etc.)
-running at `http://localhost:4318`, replace the `ConsoleSpanExporter`
-in `app.py` with an `OTLPSpanExporter` to ship traces to that backend.
-
----
-
-## 5️⃣ Clean up
-
-Deactivate the environment when done:
-
-```bash
-deactivate
-```
-
----
-
-### Files
-
-```
-.
-├─ app.py        # The FastAPI demo application with tracing
-└─ README.md     # This guide
-```
-
-Enjoy exploring your very own distributed traces!
+Enjoy exploring your very own cloud native traces!
