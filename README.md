@@ -38,6 +38,9 @@ Install otel-tui application with home-brew on macOS
 brew install ymtdzzz/tap/otel-tui
 ```
 
+If you are not on macOS please visit https://github.com/ymtdzzz/otel-tui to find
+out how to install it on your operating system
+
 ---
 
 ## Run the demo app
