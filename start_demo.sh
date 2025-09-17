@@ -28,7 +28,7 @@ fi
 
 printf "################################\n"
 printf "Start otel-tui and connect to\n"
-printf "http://127.0.0.1:8000/orders/999\n"
+printf "http://127.0.0.1:8000/orders/42\n"
 printf "################################\n"
 
 # Launch with OpenTelemetry instrumentation, replacing the shell
