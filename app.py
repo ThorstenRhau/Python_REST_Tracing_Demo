@@ -33,6 +33,8 @@ TELECOM_RESOURCE = {
 provider = TracerProvider(resource=Resource.create(TELECOM_RESOURCE))
 
 # Export spans to OTLP gRPC on localhost (otel-tui default is 4317)
+# For demo purposes clear text telemetry is used, in production
+# OTel and OTel components suppoort mTLS
 otlp_exporter = OTLPSpanExporter(endpoint="http://localhost:4317", insecure=True)
 provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
