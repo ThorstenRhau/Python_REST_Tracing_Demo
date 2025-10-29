@@ -26,10 +26,10 @@ pip install --upgrade pip
 
 pip install fastapi uvicorn httpx \
     opentelemetry-sdk \
+    opentelemetry-distro \
     opentelemetry-instrumentation-fastapi \
     opentelemetry-instrumentation-httpx \
-    opentelemetry-exporter-otlp \
-    uvicorn
+    opentelemetry-exporter-otlp
 ```
 
 Install otel-tui application with home-brew on macOS
