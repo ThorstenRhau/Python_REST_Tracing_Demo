@@ -5,12 +5,28 @@ distributed traces for inbound HTTP requests, custom spans, and outbound HTTP ca
 
 ---
 
-## Create and activate a virtual environment
+## Install uv
+
+If you don't have `uv` installed yet:
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Or with Homebrew on macOS
+brew install uv
+```
+
+See https://docs.astral.sh/uv/ for other installation options.
+
+---
+
+## Create a virtual environment
 
 From the project root (where `app.py` lives):
 
 ```bash
-python3 -m venv .venv
+uv venv
 source .venv/bin/activate   # macOS / Linux
 # .venv\Scripts\activate    # Windows PowerShell
 ```
@@ -19,17 +35,11 @@ source .venv/bin/activate   # macOS / Linux
 
 ## Install dependencies
 
-With the virtual environment active:
+With the virtual environment active, install everything listed in
+`requirements.txt`:
 
 ```bash
-pip install --upgrade pip
-
-pip install fastapi uvicorn httpx \
-    opentelemetry-sdk \
-    opentelemetry-distro \
-    opentelemetry-instrumentation-fastapi \
-    opentelemetry-instrumentation-httpx \
-    opentelemetry-exporter-otlp
+uv pip install -r requirements.txt
 ```
 
 Install otel-tui application with home-brew on macOS
