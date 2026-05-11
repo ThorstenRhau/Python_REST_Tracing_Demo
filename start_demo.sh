@@ -5,7 +5,6 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv"
 
-OPENTELE="$VENV_DIR/bin/opentelemetry-instrument"
 UVICORN="$VENV_DIR/bin/uvicorn"
 
 # Ensure venv exists
@@ -15,26 +14,16 @@ if [ ! -d "$VENV_DIR" ]; then
     exit 1
 fi
 
-# Ensure required executables exist
-if [ ! -x "$OPENTELE" ]; then
-    printf "opentelemetry-instrument not found in venv: %s\n" "$OPENTELE" >&2
-    exit 1
-fi
-
 if [ ! -x "$UVICORN" ]; then
     printf "uvicorn not found in venv: %s\n" "$UVICORN" >&2
     exit 1
 fi
 
-printf "################################\n"
-printf "Start otel-tui and connect to\n"
-printf "http://127.0.0.1:8000/orders/42\n"
-printf "################################\n"
+printf "############################################################\n"
+printf "Start otel-tui in another terminal, then visit:\n"
+printf "  http://127.0.0.1:8000/orders/42      (happy path)\n"
+printf "  http://127.0.0.1:8000/orders/fail    (error path)\n"
+printf "############################################################\n"
 
-# Launch with OpenTelemetry instrumentation, replacing the shell
-exec "$OPENTELE" "$UVICORN" app:app --reload
-
-# Optional: automatically open the URL on macOS (uncomment to enable)
-# if [ "$(uname)" = "Darwin" ]; then
-#   (sleep 0.8; open "http://127.0.0.1:8000/orders/999") &
-# fi
+# OTel is configured manually in app.py — no opentelemetry-instrument wrapper.
+exec "$UVICORN" app:app --reload

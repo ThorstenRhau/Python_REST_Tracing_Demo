@@ -67,10 +67,20 @@ Start the OTel TUI in a separate terminal
 otel-tui
 ```
 
-Visit [http://127.0.0.1:8000/orders/42](http://127.0.0.1:8000/orders/42)
+OpenTelemetry is configured manually inside `app.py` (TracerProvider, OTLP gRPC
+exporter, and the FastAPI/HTTPX auto-instrumentors), so the entire setup is
+visible in one file — no `opentelemetry-instrument` wrapper required.
 
-You should now see traces being displayed in the otel-tui application. Press
-ENTER to see the spans for each trace.
+### Demo scenarios
+
+| URL | What it shows |
+|---|---|
+| [/orders/42](http://127.0.0.1:8000/orders/42) | Happy path. Three sequential stages under `order.load` — `db.lookup.order`, `radio.context.enrichment`, `fulfilment.checks` — each with parallel children, followed by a ~1 s outbound HTTPX call. |
+| [/orders/fail](http://127.0.0.1:8000/orders/fail) | Error path. `inventory.check` records an exception and sets the span status to ERROR; `order.load` propagates the failure and the request returns HTTP 500. |
+
+The server prints the `trace_id` for each request to the terminal, so you can
+match the trace you just triggered against the list in otel-tui. Press ENTER on
+a trace to see the full span tree.
 
 ---
 
