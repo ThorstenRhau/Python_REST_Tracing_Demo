@@ -21,9 +21,9 @@ fi
 
 printf "############################################################\n"
 printf "Start otel-tui in another terminal, then visit:\n"
-printf "  http://127.0.0.1:8000/orders/42      (happy path)\n"
-printf "  http://127.0.0.1:8000/orders/fail    (error path)\n"
+printf "  curl -X POST http://127.0.0.1:8000/slice-sessions/session-42/activate\n"
+printf "  curl -X POST http://127.0.0.1:8000/slice-sessions/deny/activate\n"
 printf "############################################################\n"
 
-# OTel is configured manually in app.py — no opentelemetry-instrument wrapper.
+# OTel is configured manually in app.py; no opentelemetry-instrument wrapper.
 exec "$UVICORN" app:app --reload

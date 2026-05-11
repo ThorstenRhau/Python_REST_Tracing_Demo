@@ -2,11 +2,11 @@
 FastAPI + OpenTelemetry distributed tracing demo.
 
 Demo endpoints:
-    GET /orders/42      happy path (three sequential stages, then an outbound HTTP call)
-    GET /orders/fail    error path (records exception, sets ERROR status, returns 500)
+    POST /slice-sessions/session-42/activate    happy path
+    POST /slice-sessions/deny/activate          clean policy-denial path
 
-OTel is configured manually below — no `opentelemetry-instrument` wrapper —
-so the entire setup is visible in this single file.
+OTel is configured manually below, without the `opentelemetry-instrument`
+wrapper, so the setup stays visible in this single file.
 """
 
 import asyncio
@@ -24,38 +24,29 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
 
-# ---- Domain/resource attributes (stable 3GPP/RAN identity lives here) ----
+
+PROVISIONING_URL = "http://127.0.0.1:8000/provisioning/slice-sessions"
+
+# Stable service and topology attributes live on the resource. Subscriber,
+# session, and policy facts are attached to spans because they vary by request.
 TELECOM_RESOURCE = {
-    "service.name": "orders-api",
-    # 3GPP/RAN topology — lowercase, dot namespaced, types per OTel spec
+    "service.name": "slice-activation-api",
+    "service.namespace": "otel-telecom-demo",
     "telecom.3gpp.gnb.id": "0x019a2b",
     "telecom.3gpp.gnb.name": "se-lkp-malmslaett",
     "telecom.3gpp.gnb.function.id": 17,
-    "telecom.3gpp.gnb.function.name": "nr macro west",
+    "telecom.3gpp.gnb.function.name": "nr_macro_west",
     "telecom.3gpp.nr.cell.id": "0x4f12c7",
     "telecom.3gpp.nr.band": "n78",
     "telecom.3gpp.nr.pci": 123,
-    "telecom.3gpp.plmn.mcc": "262",
-    "telecom.3gpp.plmn.mnc": "01",
-    "telecom.3gpp.slice.service.type": 1,
-    "telecom.3gpp.slice.differentiator": "010203",
-    "telecom.3gpp.amf.region": "eu-central-1",
-    "telecom.3gpp.amf.set": "amf-set-07",
-    "telecom.3gpp.smf.id": "smf-35",
-    "telecom.3gpp.ue.imei": "356938035643809",
-    "telecom.3gpp.ue.supi": "imsi-262019876543210",
-    "telecom.o-ran.near_rt_ric.id": "ric-210-ne",
-    "telecom.o-ran.o_du.id": "odu-201",
-    "telecom.o-ran.o_cu.id": "ocu-504",
+    "telecom.o_ran.near_rt_ric.id": "ric-210-ne",
+    "telecom.o_ran.o_du.id": "odu-201",
+    "telecom.o_ran.o_cu.id": "ocu-504",
 }
 
 
 def configure_opentelemetry():
-    """Wire up TracerProvider, OTLP gRPC exporter, and auto-instrumentation.
-
-    For demo purposes clear-text telemetry is used; in production OTel and
-    OTel components support mTLS.
-    """
+    """Wire up TracerProvider, OTLP gRPC exporter, and auto-instrumentation."""
     provider = TracerProvider(resource=Resource.create(TELECOM_RESOURCE))
     otlp_exporter = OTLPSpanExporter(endpoint="localhost:4317", insecure=True)
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
@@ -68,134 +59,199 @@ tracer = configure_opentelemetry()
 # --- FastAPI app + auto instrumentation ---
 app = FastAPI()
 FastAPIInstrumentor.instrument_app(app)  # server spans for inbound requests
-HTTPXClientInstrumentor().instrument()   # client spans for outbound HTTP
+HTTPXClientInstrumentor().instrument()  # client spans for outbound HTTP
 
 
-# ── Stage 1: persistence ──────────────────────────────────────────────
-async def db_lookup_order(order_id: str) -> None:
-    """Look up the order in the database, with a Redis cache child span."""
-    with tracer.start_as_current_span("db.lookup.order") as span:
-        span.set_attribute("db.system", "sqlite")
-        span.set_attribute("db.statement", "SELECT * FROM orders WHERE id = ?")
-        span.set_attribute("telecom.3gpp.slice.service.type", 1)
-        span.add_event("db.lookup.start", {"order.id": order_id})
-        await asyncio.sleep(0.08)
+async def validate_subscriber(session_id: str) -> dict:
+    """Validate subscriber eligibility and attach privacy-safe subscriber context."""
+    with tracer.start_as_current_span("subscriber.validate") as span:
+        subscriber = {
+            "supi_hash": "sha256:demo-26201-9876543210",
+            "tenant": "consumer_mobile",
+            "plmn_mcc": "262",
+            "plmn_mnc": "01",
+        }
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("user.hash", subscriber["supi_hash"])
+        span.set_attribute("network.carrier.mcc", subscriber["plmn_mcc"])
+        span.set_attribute("network.carrier.mnc", subscriber["plmn_mnc"])
+        span.set_attribute("network.connection.type", "cell")
+        span.set_attribute("network.connection.subtype", "nr")
+        span.add_event("subscriber.eligibility.checked", {"eligible": True})
+        await asyncio.sleep(0.04)
+        return subscriber
 
-        with tracer.start_as_current_span("cache.lookup") as cache_span:
-            cache_span.set_attribute("cache.hit", True)
-            cache_span.set_attribute("cache.system", "redis")
-            cache_span.add_event("cache.fetch", {"key": f"order:{order_id}"})
-            await asyncio.sleep(0.025)
 
-        span.add_event("db.lookup.end", {"row.count": 1})
+async def resolve_slice_profile(session_id: str) -> dict:
+    """Resolve the requested slice and QoS profile."""
+    with tracer.start_as_current_span("slice.resolve_profile") as span:
+        slice_profile = {
+            "service_type": 1,
+            "differentiator": "010203",
+            "name": "enhanced_mobile_broadband",
+            "five_qi": 9,
+            "priority_level": 6,
+        }
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("telecom.3gpp.slice.service_type", slice_profile["service_type"])
+        span.set_attribute("telecom.3gpp.slice.differentiator", slice_profile["differentiator"])
+        span.set_attribute("telecom.3gpp.qos.flow.5qi", slice_profile["five_qi"])
+        span.set_attribute("telecom.3gpp.qos.priority_level", slice_profile["priority_level"])
+        span.add_event("slice.profile.resolved", {"slice.name": slice_profile["name"]})
+        await asyncio.sleep(0.05)
+        return slice_profile
 
 
-# ── Stage 2: radio context (3GPP / O-RAN) ────────────────────────────
-async def enrich_with_radio_context(order_id: str) -> None:
-    """Attach 3GPP and O-RAN context spans to the trace."""
-    with tracer.start_as_current_span("radio.context.enrichment") as span:
-        span.set_attribute("telecom.3gpp.ue.supi", f"imsi-26201{order_id:0>6}")
-        span.set_attribute("telecom.3gpp.qos.flow.5qi", 9)
-        span.set_attribute("telecom.3gpp.qos.slice.sd", "010203")
+async def enrich_with_radio_context(session_id: str) -> None:
+    """Attach 3GPP and O-RAN radio context to the trace."""
+    with tracer.start_as_current_span("radio.context_enrichment") as span:
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("telecom.3gpp.nr.cell.id", "0x4f12c7")
+        span.set_attribute("telecom.3gpp.nr.band", "n78")
+        span.set_attribute("telecom.3gpp.nr.pci", 123)
         await asyncio.gather(
-            fetch_near_rt_ric_policy(order_id),
+            fetch_near_rt_ric_policy(session_id),
             check_o_du_health(),
         )
         span.add_event("radio.context.complete")
 
 
-async def fetch_near_rt_ric_policy(order_id: str) -> None:
-    with tracer.start_as_current_span("oran.near_rt_ric.policy") as span:
-        span.set_attribute("telecom.o-ran.near_rt_ric.id", "ric-210-ne")
-        span.set_attribute("telecom.o-ran.policy.id", "policy-5qi9-lowlat")
-        span.add_event(
-            "o-ran.policy.apply",
-            {"order.id": order_id, "telecom.o-ran.ran.slice": "cot-slice-09"},
-        )
-        await asyncio.sleep(0.06)
-
-
-async def check_o_du_health() -> None:
-    with tracer.start_as_current_span("oran.odu.health") as span:
-        span.set_attribute("telecom.o-ran.o_du.id", "odu-201")
-        span.set_attribute("telecom.o-ran.o_du.state", "active")
-        span.add_event("o-ran.o-du.heartbeat", {"latency.ms": 2.3})
+async def fetch_near_rt_ric_policy(session_id: str) -> None:
+    with tracer.start_as_current_span("ric.policy_fetch") as span:
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("telecom.o_ran.near_rt_ric.id", "ric-210-ne")
+        span.set_attribute("telecom.o_ran.policy.id", "policy-embb-default")
+        span.add_event("ric.policy.loaded", {"policy.version": "2026.05.11"})
         await asyncio.sleep(0.04)
 
 
-# ── Stage 3: fulfilment ──────────────────────────────────────────────
-async def fulfilment_checks(order_id: str) -> None:
-    """Run inventory and charging checks in parallel under a parent span."""
-    with tracer.start_as_current_span("fulfilment.checks") as span:
-        span.set_attribute("app.order_id", order_id)
-        await asyncio.gather(
-            check_inventory(order_id),
-            check_charging_session(order_id),
-        )
+async def check_o_du_health() -> None:
+    with tracer.start_as_current_span("odu.health_check") as span:
+        span.set_attribute("telecom.o_ran.o_du.id", "odu-201")
+        span.set_attribute("telecom.o_ran.o_du.state", "active")
+        span.add_event("odu.heartbeat", {"latency.ms": 2.3})
+        await asyncio.sleep(0.03)
 
 
-async def check_inventory(order_id: str) -> None:
-    with tracer.start_as_current_span("inventory.check") as span:
-        span.set_attribute("app.inventory.region", "eu-central")
-        span.add_event("inventory.lookup.start", {"order.id": order_id})
+async def evaluate_ric_admission(session_id: str, slice_profile: dict) -> bool:
+    """Ask the near-RT RIC whether this slice session should be admitted."""
+    with tracer.start_as_current_span("ric.admission_decision") as span:
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("telecom.o_ran.near_rt_ric.id", "ric-210-ne")
+        span.set_attribute("telecom.o_ran.policy.id", "policy-embb-default")
+        span.set_attribute("telecom.3gpp.slice.service_type", slice_profile["service_type"])
+        span.set_attribute("telecom.3gpp.slice.differentiator", slice_profile["differentiator"])
+        await asyncio.sleep(0.06)
 
-        # order_id == "fail" demonstrates the OTel error-recording pattern.
-        if order_id == "fail":
-            error_msg = "Inventory system unavailable for this ID"
-            span.record_exception(RuntimeError(error_msg))
-            span.set_status(Status(StatusCode.ERROR, error_msg))
-            raise RuntimeError(error_msg)
+        if session_id == "deny":
+            reason = "RIC admission denied for requested slice"
+            span.set_status(Status(StatusCode.ERROR, reason))
+            span.add_event("ric.admission.denied", {"reason": "policy_capacity_guard"})
+            return False
 
-        await asyncio.sleep(0.07)
-        span.add_event("inventory.lookup.end", {"available": True})
-
-
-async def check_charging_session(order_id: str) -> None:
-    with tracer.start_as_current_span("charging.session.lookup") as span:
-        span.set_attribute("telecom.3gpp.pcrf.id", "pcrf-12")
-        span.set_attribute("telecom.3gpp.ccf.mode", "online")
-        span.add_event("charging.session.start", {"order.id": order_id})
-        await asyncio.sleep(0.055)
-        span.add_event("charging.session.validated", {"quota.mb": 2048})
+        span.add_event("ric.admission.accepted", {"decision.latency.ms": 14.2})
+        return True
 
 
-# ── HTTP entry point ─────────────────────────────────────────────────
-@app.get("/orders/{order_id}")
-async def get_order(order_id: str, request: Request):
-    with tracer.start_as_current_span("order.load") as span:
-        span.set_attribute("app.order_id", order_id)
-        span.set_attribute("telecom.3gpp.session.id", f"pdu-{order_id:0>6}")
+async def check_charging_quota(session_id: str, slice_profile: dict) -> None:
+    with tracer.start_as_current_span("charging.quota_check") as span:
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("telecom.3gpp.chf.id", "chf-12")
+        span.set_attribute("telecom.3gpp.charging.mode", "online")
+        span.set_attribute("telecom.3gpp.slice.service_type", slice_profile["service_type"])
+        span.add_event("charging.quota.validated", {"quota.mb": 2048})
+        await asyncio.sleep(0.05)
 
-        # Print the trace_id so the presenter can locate this trace in otel-tui.
-        trace_id_hex = format(span.get_span_context().trace_id, "032x")
-        print(f"[demo] order_id={order_id} trace_id={trace_id_hex}")
 
-        try:
-            # Three stages run sequentially so the timeline narrates left-to-right.
-            await db_lookup_order(order_id)
-            await enrich_with_radio_context(order_id)
-            await fulfilment_checks(order_id)
-            span.add_event("order.load.complete")
-        except RuntimeError as e:
-            span.record_exception(e)
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            span.add_event("order.load.failed", {"reason": str(e)})
-            raise HTTPException(status_code=500, detail=str(e))
+async def commit_provisioning(session_id: str, slice_profile: dict) -> float:
+    """Call a second instrumented endpoint so HTTP propagation is visible."""
+    with tracer.start_as_current_span("provisioning.commit") as span:
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("telecom.3gpp.slice.service_type", slice_profile["service_type"])
 
-    # Outbound call is traced automatically by HTTPX instrumentation.
-    async with httpx.AsyncClient() as client:
-        r = await client.get("https://httpbin.org/delay/1")
-        upstream_ms = r.elapsed.total_seconds() * 1000
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{PROVISIONING_URL}/{session_id}",
+                json={
+                    "slice": {
+                        "service_type": slice_profile["service_type"],
+                        "differentiator": slice_profile["differentiator"],
+                    }
+                },
+            )
+            response.raise_for_status()
 
-    # Enrich the active *server* span with request-scoped attributes.
-    current = trace.get_current_span()
+        upstream_ms = response.elapsed.total_seconds() * 1000
+        span.set_attribute("app.provisioning_ms", upstream_ms)
+        span.add_event("provisioning.committed", response.json())
+        return upstream_ms
+
+
+@app.post("/slice-sessions/{session_id}/activate")
+async def activate_slice_session(session_id: str, request: Request):
+    server_span = trace.get_current_span()
     client_ip = request.client.host if request.client else ""
+    server_span.set_attribute("client.address", client_ip)
+    server_span.set_attribute("app.session.id", session_id)
 
-    current.set_attribute("enduser.id", "u-123")
-    current.set_attribute("client.address", client_ip)
-    current.set_attribute("app.order_id", order_id)
-    current.set_attribute("telecom.3gpp.qos.flow.5qi", 9)
-    current.set_attribute("telecom.o-ran.o_du.state", "active")
-    current.set_attribute("app.upstream_ms", upstream_ms)
+    denial_reason = ""
+    with tracer.start_as_current_span("slice_session.activate") as span:
+        span.set_attribute("app.session.id", session_id)
 
-    return {"id": order_id, "status": "ok", "upstream_ms": upstream_ms}
+        trace_id_hex = format(span.get_span_context().trace_id, "032x")
+        print(f"[demo] session_id={session_id} trace_id={trace_id_hex}")
+
+        subscriber = await validate_subscriber(session_id)
+        slice_profile = await resolve_slice_profile(session_id)
+        await enrich_with_radio_context(session_id)
+
+        admitted = await evaluate_ric_admission(session_id, slice_profile)
+        if not admitted:
+            denial_reason = "RIC admission denied for requested slice"
+            span.set_status(Status(StatusCode.ERROR, denial_reason))
+            span.add_event("slice_session.activation_denied", {"reason": denial_reason})
+        else:
+            await check_charging_quota(session_id, slice_profile)
+            provisioning_ms = await commit_provisioning(session_id, slice_profile)
+            span.add_event("slice_session.activated")
+
+    if denial_reason:
+        raise HTTPException(status_code=403, detail=denial_reason)
+
+    server_span.set_attribute("user.hash", subscriber["supi_hash"])
+    server_span.set_attribute("network.carrier.mcc", subscriber["plmn_mcc"])
+    server_span.set_attribute("network.carrier.mnc", subscriber["plmn_mnc"])
+    server_span.set_attribute("telecom.3gpp.slice.service_type", slice_profile["service_type"])
+    server_span.set_attribute("telecom.3gpp.slice.differentiator", slice_profile["differentiator"])
+    server_span.set_attribute("telecom.3gpp.qos.flow.5qi", slice_profile["five_qi"])
+    server_span.set_attribute("app.provisioning_ms", provisioning_ms)
+
+    return {
+        "id": session_id,
+        "status": "activated",
+        "slice": {
+            "service_type": slice_profile["service_type"],
+            "differentiator": slice_profile["differentiator"],
+            "qos_flow_5qi": slice_profile["five_qi"],
+        },
+        "provisioning_ms": provisioning_ms,
+    }
+
+
+@app.post("/provisioning/slice-sessions/{session_id}")
+async def provision_slice_session(session_id: str, payload: dict):
+    """Tiny downstream endpoint used to show HTTP context propagation."""
+    with tracer.start_as_current_span("provisioning.write_model") as span:
+        span.set_attribute("app.session.id", session_id)
+        span.set_attribute("db.system.name", "sqlite")
+        span.set_attribute("db.query.summary", "INSERT slice_session")
+        span.set_attribute(
+            "db.query.text",
+            "INSERT INTO slice_sessions (id, sst, sd, status) VALUES (?, ?, ?, ?)",
+        )
+        span.set_attribute("telecom.3gpp.slice.service_type", payload["slice"]["service_type"])
+        span.set_attribute("telecom.3gpp.slice.differentiator", payload["slice"]["differentiator"])
+        span.add_event("provisioning.write.committed", {"status": "active"})
+        await asyncio.sleep(0.08)
+
+    return {"provisioning_status": "committed"}
