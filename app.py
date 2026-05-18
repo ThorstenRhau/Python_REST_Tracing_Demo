@@ -10,12 +10,14 @@ wrapper, so the setup stays visible in this single file.
 """
 
 import asyncio
+import logging
+import time
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
-# --- OpenTelemetry setup (essentials) ---
-from opentelemetry import trace
+# --- OpenTelemetry tracing ---
+from opentelemetry import metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
@@ -23,6 +25,17 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
+
+# --- OpenTelemetry logs ---
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+
+# --- OpenTelemetry metrics ---
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
 
 PROVISIONING_URL = "http://127.0.0.1:8000/provisioning/slice-sessions"
@@ -46,15 +59,57 @@ TELECOM_RESOURCE = {
 
 
 def configure_opentelemetry():
-    """Wire up TracerProvider, OTLP gRPC exporter, and auto-instrumentation."""
-    provider = TracerProvider(resource=Resource.create(TELECOM_RESOURCE))
-    otlp_exporter = OTLPSpanExporter(endpoint="localhost:4317", insecure=True)
-    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-    trace.set_tracer_provider(provider)
-    return trace.get_tracer(__name__)
+    """Wire up Tracer/Logger/Meter providers with OTLP gRPC exporters."""
+    resource = Resource.create(TELECOM_RESOURCE)
+
+    # --- Traces ---
+    trace_provider = TracerProvider(resource=resource)
+    trace_provider.add_span_processor(
+        BatchSpanProcessor(OTLPSpanExporter(endpoint="localhost:4317", insecure=True))
+    )
+    trace.set_tracer_provider(trace_provider)
+
+    # --- Logs ---
+    log_provider = LoggerProvider(resource=resource)
+    log_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint="localhost:4317", insecure=True))
+    )
+    set_logger_provider(log_provider)
+    otel_handler = LoggingHandler(logger_provider=log_provider)
+    otel_handler.setLevel(logging.DEBUG)
+    logging.getLogger().addHandler(otel_handler)
+    logging.getLogger().setLevel(logging.INFO)
+
+    # --- Metrics ---
+    metric_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(endpoint="localhost:4317", insecure=True),
+        export_interval_millis=5000,
+    )
+    meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+    metrics.set_meter_provider(meter_provider)
+
+    return (
+        trace.get_tracer(__name__),
+        logging.getLogger("slice-activation-api"),
+        metrics.get_meter("slice-activation-api"),
+    )
 
 
-tracer = configure_opentelemetry()
+tracer, logger, meter = configure_opentelemetry()
+
+# --- Metric instruments ---
+request_counter = meter.create_counter(
+    "slice_session.requests", description="Total slice session activation requests", unit="1"
+)
+request_duration = meter.create_histogram(
+    "slice_session.duration", description="Slice session activation latency", unit="ms"
+)
+active_sessions = meter.create_up_down_counter(
+    "slice_session.active", description="Currently active slice sessions", unit="1"
+)
+admission_decisions = meter.create_counter(
+    "ric.admission_decisions", description="RIC admission decisions", unit="1"
+)
 
 # --- FastAPI app + auto instrumentation ---
 app = FastAPI()
@@ -79,6 +134,7 @@ async def validate_subscriber(session_id: str) -> dict:
         span.set_attribute("network.connection.subtype", "nr")
         span.add_event("subscriber.eligibility.checked", {"eligible": True})
         await asyncio.sleep(0.04)
+        logger.info("Subscriber validated", extra={"session_id": session_id, "tenant": subscriber["tenant"]})
         return subscriber
 
 
@@ -99,6 +155,7 @@ async def resolve_slice_profile(session_id: str) -> dict:
         span.set_attribute("telecom.3gpp.qos.priority_level", slice_profile["priority_level"])
         span.add_event("slice.profile.resolved", {"slice.name": slice_profile["name"]})
         await asyncio.sleep(0.05)
+        logger.info("Slice profile resolved", extra={"session_id": session_id, "slice_name": slice_profile["name"], "five_qi": slice_profile["five_qi"]})
         return slice_profile
 
 
@@ -147,9 +204,13 @@ async def evaluate_ric_admission(session_id: str, slice_profile: dict) -> bool:
             reason = "RIC admission denied for requested slice"
             span.set_status(Status(StatusCode.ERROR, reason))
             span.add_event("ric.admission.denied", {"reason": "policy_capacity_guard"})
+            admission_decisions.add(1, {"decision": "denied"})
+            logger.warning("RIC admission denied", extra={"session_id": session_id, "reason": "policy_capacity_guard"})
             return False
 
         span.add_event("ric.admission.accepted", {"decision.latency.ms": 14.2})
+        admission_decisions.add(1, {"decision": "accepted"})
+        logger.info("RIC admission accepted", extra={"session_id": session_id})
         return True
 
 
@@ -184,11 +245,15 @@ async def commit_provisioning(session_id: str, slice_profile: dict) -> float:
         upstream_ms = response.elapsed.total_seconds() * 1000
         span.set_attribute("app.provisioning_ms", upstream_ms)
         span.add_event("provisioning.committed", response.json())
+        logger.info("Provisioning committed", extra={"session_id": session_id, "provisioning_ms": upstream_ms})
         return upstream_ms
 
 
 @app.post("/slice-sessions/{session_id}/activate")
 async def activate_slice_session(session_id: str, request: Request):
+    start_time = time.perf_counter()
+    request_counter.add(1, {"session_id": session_id})
+
     server_span = trace.get_current_span()
     client_ip = request.client.host if request.client else ""
     server_span.set_attribute("client.address", client_ip)
@@ -199,7 +264,7 @@ async def activate_slice_session(session_id: str, request: Request):
         span.set_attribute("app.session.id", session_id)
 
         trace_id_hex = format(span.get_span_context().trace_id, "032x")
-        print(f"[demo] session_id={session_id} trace_id={trace_id_hex}")
+        logger.info("Activation started", extra={"session_id": session_id, "trace_id": trace_id_hex})
 
         subscriber = await validate_subscriber(session_id)
         slice_profile = await resolve_slice_profile(session_id)
@@ -215,8 +280,16 @@ async def activate_slice_session(session_id: str, request: Request):
             provisioning_ms = await commit_provisioning(session_id, slice_profile)
             span.add_event("slice_session.activated")
 
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+
     if denial_reason:
+        request_duration.record(elapsed_ms, {"status": "denied"})
+        logger.warning("Activation denied", extra={"session_id": session_id, "reason": denial_reason, "duration_ms": elapsed_ms})
         raise HTTPException(status_code=403, detail=denial_reason)
+
+    request_duration.record(elapsed_ms, {"status": "success"})
+    active_sessions.add(1, {"slice.service_type": str(slice_profile["service_type"])})
+    logger.info("Activation complete", extra={"session_id": session_id, "duration_ms": elapsed_ms})
 
     server_span.set_attribute("user.hash", subscriber["supi_hash"])
     server_span.set_attribute("network.carrier.mcc", subscriber["plmn_mcc"])

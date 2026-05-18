@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.metrics.export import MetricExporter, MetricExportResult
 from opentelemetry.sdk.trace.export import SpanExportResult
 
 
@@ -23,6 +24,20 @@ class CapturingExporter:
         return None
 
     def force_flush(self, timeout_millis=30000):
+        return True
+
+
+class NoOpMetricExporter(MetricExporter):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def export(self, metrics_data, timeout_millis=10000, **kwargs):
+        return MetricExportResult.SUCCESS
+
+    def shutdown(self, timeout_millis=30000, **kwargs):
+        return True
+
+    def force_flush(self, timeout_millis=10000):
         return True
 
 
@@ -55,6 +70,12 @@ def load_demo_app():
     with patch(
         "opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter",
         CapturingExporter,
+    ), patch(
+        "opentelemetry.exporter.otlp.proto.grpc._log_exporter.OTLPLogExporter",
+        CapturingExporter,
+    ), patch(
+        "opentelemetry.exporter.otlp.proto.grpc.metric_exporter.OTLPMetricExporter",
+        NoOpMetricExporter,
     ):
         demo = importlib.import_module("app")
 
