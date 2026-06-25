@@ -20,7 +20,10 @@ if [ ! -x "$UVICORN" ]; then
 fi
 
 printf "############################################################\n"
-printf "Start otel-tui in another terminal, then visit:\n"
+printf "Start the Go telemetry backend in another terminal:\n"
+printf "  go run ./cmd/otel-demo-backend\n"
+printf "\n"
+printf "Then trigger demo requests:\n"
 printf "  curl -X POST http://127.0.0.1:8000/slice-sessions/session-42/activate\n"
 printf "  curl -X POST http://127.0.0.1:8000/slice-sessions/deny/activate\n"
 printf "############################################################\n"

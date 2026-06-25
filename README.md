@@ -49,29 +49,41 @@ With the virtual environment active, install everything listed in
 uv pip install -r requirements.txt
 ```
 
-Install otel-tui application with home-brew on macOS
+The telemetry viewer is included in this repository as a local Go backend. It
+receives OTLP gRPC traces, logs, and metrics on `127.0.0.1:4317`, keeps them in
+memory, and renders a terminal trace explorer. Start it from the project root:
 
 ```bash
-brew install ymtdzzz/tap/otel-tui
+go run ./cmd/otel-demo-backend
 ```
 
-If you are not on macOS please visit https://github.com/ymtdzzz/otel-tui to find
-out how to install it on your operating system
+Optional SQLite persistence stores normalized rows and raw OTLP payloads:
+
+```bash
+go run ./cmd/otel-demo-backend --db telemetry.sqlite
+```
 
 ---
 
 ## Run the demo app
 
-Start the FastAPI server:
+Start the telemetry backend in one terminal:
+
+```bash
+go run ./cmd/otel-demo-backend
+```
+
+Then start the FastAPI server in another terminal:
 
 ```bash
 ./start_demo.sh
 ```
 
-Start the OTel TUI in a separate terminal
+By default the app exports OTLP gRPC to `http://127.0.0.1:4317`. Override it if
+you start the backend on a different address:
 
 ```bash
-otel-tui
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 ./start_demo.sh
 ```
 
 OpenTelemetry is configured manually inside `app.py` (TracerProvider, OTLP gRPC
@@ -96,5 +108,6 @@ The happy path also calls `POST /provisioning/slice-sessions/{session_id}` via
 HTTPX. That creates an outbound client span and a second inbound server span.
 
 The server prints the `trace_id` for each request to the terminal, so you can
-match the trace you just triggered against the list in otel-tui. Press ENTER on
-a trace to see the full span tree.
+match the trace you just triggered against the list in the Go TUI. Use `j`/`k`
+or arrow keys to navigate, `enter` to expand or collapse the selected trace,
+`tab` to switch panes, and `q` to quit.

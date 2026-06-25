@@ -11,6 +11,7 @@ wrapper, so the setup stays visible in this single file.
 
 import asyncio
 import logging
+import os
 import time
 
 import httpx
@@ -39,6 +40,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
 
 PROVISIONING_URL = "http://127.0.0.1:8000/provisioning/slice-sessions"
+OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4317")
 
 # Stable service and topology attributes live on the resource. Subscriber,
 # session, and policy facts are attached to spans because they vary by request.
@@ -65,14 +67,14 @@ def configure_opentelemetry():
     # --- Traces ---
     trace_provider = TracerProvider(resource=resource)
     trace_provider.add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter(endpoint="localhost:4317", insecure=True))
+        BatchSpanProcessor(OTLPSpanExporter(endpoint=OTLP_ENDPOINT, insecure=True))
     )
     trace.set_tracer_provider(trace_provider)
 
     # --- Logs ---
     log_provider = LoggerProvider(resource=resource)
     log_provider.add_log_record_processor(
-        BatchLogRecordProcessor(OTLPLogExporter(endpoint="localhost:4317", insecure=True))
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=OTLP_ENDPOINT, insecure=True))
     )
     set_logger_provider(log_provider)
     otel_handler = LoggingHandler(logger_provider=log_provider)
@@ -82,7 +84,7 @@ def configure_opentelemetry():
 
     # --- Metrics ---
     metric_reader = PeriodicExportingMetricReader(
-        OTLPMetricExporter(endpoint="localhost:4317", insecure=True),
+        OTLPMetricExporter(endpoint=OTLP_ENDPOINT, insecure=True),
         export_interval_millis=5000,
     )
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
